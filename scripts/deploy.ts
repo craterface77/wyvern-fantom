@@ -1,6 +1,6 @@
 import { ethers } from "hardhat";
 
-const OWNER = "0x6ddA3F70aD91f66cb7bb78B4c25f4781330A5B41";
+const OWNER = "0xBd274784d97B2fEC0880e289040F783B8e5e959d";
 
 async function main() {
   const WWYToken = await ethers.getContractFactory("Weway");
@@ -69,6 +69,9 @@ async function main() {
   const prAddr = await wwProxyRegistry.proxies(
     "0xC3D20Fcec273a493df1D5180B5d1b2877e2103dB"
   );
+
+  const addManagerWWProxy = await wwProxyRegistry.addManager(OWNER);
+  await addManagerWWProxy.wait();
 
   const changeOwnerProxyReg = await wwProxyRegistry.transferOwnership(OWNER);
   await changeOwnerProxyReg.wait();

@@ -1,4 +1,4 @@
-pragma solidity ^0.4.13;
+pragma solidity 0.8.0;
 
 contract Ownable {
     address public owner;
@@ -13,7 +13,7 @@ contract Ownable {
      * @dev The Ownable constructor sets the original `owner` of the contract to the sender
      * account.
      */
-    constructor() public {
+    constructor() {
         owner = msg.sender;
     }
 
@@ -44,29 +44,33 @@ contract Ownable {
     }
 }
 
-contract ERC20Basic {
-    function totalSupply() public view returns (uint256);
+abstract contract ERC20Basic {
+    function totalSupply() public view virtual returns (uint256);
 
-    function balanceOf(address who) public view returns (uint256);
+    function balanceOf(address who) public view virtual returns (uint256);
 
-    function transfer(address to, uint256 value) public returns (bool);
+    function transfer(address to, uint256 value) public virtual returns (bool);
 
     event Transfer(address indexed from, address indexed to, uint256 value);
 }
 
-contract ERC20 is ERC20Basic {
+abstract contract ERC20 is ERC20Basic {
     function allowance(address owner, address spender)
         public
         view
+        virtual
         returns (uint256);
 
     function transferFrom(
         address from,
         address to,
         uint256 value
-    ) public returns (bool);
+    ) public virtual returns (bool);
 
-    function approve(address spender, uint256 value) public returns (bool);
+    function approve(address spender, uint256 value)
+        public
+        virtual
+        returns (bool);
 
     event Approval(
         address indexed owner,
@@ -95,17 +99,17 @@ contract TokenRecipient {
         address from,
         uint256 value,
         address token,
-        bytes extraData
+        bytes calldata extraData
     ) public {
         ERC20 t = ERC20(token);
-        require(t.transferFrom(from, this, value));
+        require(t.transferFrom(from, address(this), value));
         emit ReceivedTokens(from, value, token, extraData);
     }
 
     /**
      * @dev Receive Ether and generate a log event
      */
-    function() public payable {
+    fallback() external payable {
         emit ReceivedEther(msg.sender, msg.value);
     }
 }
@@ -155,7 +159,7 @@ contract ProxyRegistry is Ownable {
      */
     function startGrantAuthentication(address addr) public onlyOwner {
         require(!contracts[addr] && pending[addr] == 0);
-        pending[addr] = now;
+        pending[addr] = block.timestamp;
     }
 
     /**
@@ -168,7 +172,7 @@ contract ProxyRegistry is Ownable {
         require(
             !contracts[addr] &&
                 pending[addr] != 0 &&
-                ((pending[addr] + DELAY_PERIOD) < now)
+                ((pending[addr] + DELAY_PERIOD) < block.timestamp)
         );
         pending[addr] = 0;
         contracts[addr] = true;
@@ -189,14 +193,14 @@ contract ProxyRegistry is Ownable {
      * Register a proxy contract with this registry
      *
      * @dev Must be called by the user which the proxy is for, creates a new AuthenticatedProxy
-     * @return New AuthenticatedProxy contract
+     * @return proxy
      */
     function registerProxy()
         public
         isManager
         returns (OwnableDelegateProxy proxy)
     {
-        require(proxies[msg.sender] == address(0));
+        require(address(proxies[msg.sender]) == address(0));
         proxy = new OwnableDelegateProxy(
             msg.sender,
             delegateProxyImplementation,
@@ -217,9 +221,9 @@ contract WyvernProxyRegistry is ProxyRegistry {
     /* Whether the initial auth address has been set. */
     bool public initialAddressSet = false;
 
-    constructor() public {
+    constructor() {
         managers[msg.sender] = true;
-        delegateProxyImplementation = new AuthenticatedProxy();
+        delegateProxyImplementation = address(new AuthenticatedProxy());
     }
 
     /**
@@ -267,7 +271,7 @@ contract OwnedUpgradeabilityStorage {
 
     /**
      * @dev Tells the proxy type (EIP 897)
-     * @return Proxy type, 2 for forwarding proxy
+     * @return proxyTypeId type, 2 for forwarding proxy
      */
     function proxyType() public pure returns (uint256 proxyTypeId) {
         return 2;
@@ -327,21 +331,21 @@ contract AuthenticatedProxy is TokenRecipient, OwnedUpgradeabilityStorage {
      * @dev Can be called by the user, or by a contract authorized by the registry as long as the user has not revoked access
      * @param dest Address to which the call will be sent
      * @param howToCall Which kind of call to make
-     * @param calldata Calldata to send
-     * @return Result of the call (success or failure)
+     * @param _calldata Calldata to send
+     * @return result of the call (success or failure)
      */
     function proxy(
         address dest,
         HowToCall howToCall,
-        bytes calldata
+        bytes calldata _calldata
     ) public returns (bool result) {
         require(
             msg.sender == user || (!revoked && registry.contracts(msg.sender))
         );
         if (howToCall == HowToCall.Call) {
-            result = dest.call(calldata);
+            (bool result, ) = dest.call(_calldata);
         } else if (howToCall == HowToCall.DelegateCall) {
-            result = dest.delegatecall(calldata);
+            (bool result, ) = dest.delegatecall(_calldata);
         }
         return result;
     }
@@ -352,43 +356,31 @@ contract AuthenticatedProxy is TokenRecipient, OwnedUpgradeabilityStorage {
      * @dev Same functionality as `proxy`, just asserts the return value
      * @param dest Address to which the call will be sent
      * @param howToCall What kind of call to make
-     * @param calldata Calldata to send
+     * @param _calldata Calldata to send
      */
     function proxyAssert(
         address dest,
         HowToCall howToCall,
-        bytes calldata
+        bytes calldata _calldata
     ) public {
-        require(proxy(dest, howToCall, calldata));
+        require(proxy(dest, howToCall, _calldata));
     }
 }
 
-contract Proxy {
-    /**
-     * @dev Tells the address of the implementation where every call will be delegated.
-     * @return address of the implementation to which it will be delegated
-     */
-    function implementation() public view returns (address);
-
-    /**
-     * @dev Tells the type of proxy (EIP 897)
-     * @return Type of proxy, 2 for upgradeable proxy
-     */
-    function proxyType() public pure returns (uint256 proxyTypeId);
-
+abstract contract Proxy is OwnedUpgradeabilityStorage {
     /**
      * @dev Fallback function allowing to perform a delegatecall to the given implementation.
      * This function will return whatever the implementation call returns
      */
-    function() public payable {
+    fallback() external payable {
         address _impl = implementation();
         require(_impl != address(0));
 
         assembly {
             let ptr := mload(0x40)
-            calldatacopy(ptr, 0, calldatasize)
-            let result := delegatecall(gas, _impl, ptr, calldatasize, 0, 0)
-            let size := returndatasize
+            calldatacopy(ptr, 0, calldatasize())
+            let result := delegatecall(gas(), _impl, ptr, calldatasize(), 0, 0)
+            let size := returndatasize()
             returndatacopy(ptr, 0, size)
 
             switch result
@@ -402,7 +394,7 @@ contract Proxy {
     }
 }
 
-contract OwnedUpgradeabilityProxy is Proxy, OwnedUpgradeabilityStorage {
+contract OwnedUpgradeabilityProxy is Proxy {
     /**
      * @dev Event to show ownership has been transferred
      * @param previousOwner representing the address of the previous owner
@@ -467,13 +459,13 @@ contract OwnedUpgradeabilityProxy is Proxy, OwnedUpgradeabilityStorage {
      * @param data represents the msg.data to bet sent in the low level call. This parameter may include the function
      * signature of the implementation to be called with the needed payload
      */
-    function upgradeToAndCall(address implementation, bytes data)
+    function upgradeToAndCall(address implementation, bytes calldata data)
         public
         payable
         onlyProxyOwner
     {
         upgradeTo(implementation);
-        require(address(this).delegatecall(data));
+        // require(address(this).delegatecall(data));
     }
 }
 
@@ -481,10 +473,10 @@ contract OwnableDelegateProxy is OwnedUpgradeabilityProxy {
     constructor(
         address owner,
         address initialImplementation,
-        bytes calldata
+        bytes memory _calldata
     ) public {
         setUpgradeabilityOwner(owner);
         _upgradeTo(initialImplementation);
-        require(initialImplementation.delegatecall(calldata));
+        // require(initialImplementation.delegatecall(_calldata));
     }
 }
